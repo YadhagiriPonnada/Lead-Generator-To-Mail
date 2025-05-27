@@ -1,0 +1,81 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leads",
+        "options": {
+          "rawBody": true,
+          "responseMode": "lastNode",
+          "responseData": "firstEntryJson"
+        }
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "leads",
+        "fields": {
+          "values": [
+            {
+              "name": "={{$json.name}}",
+              "email": "={{$json.email}}",
+              "company": "={{$json.company}}",
+              "message": "={{$json.message}}",
+              "createdAt": "={{$now}}"
+            }
+          ]
+        }
+      },
+      "name": "MongoDB",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "credentials": {
+        "mongodb": {
+          "name": "MongoDB Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "notifications@yourdomain.com",
+        "toEmail": "sales@yourdomain.com",
+        "subject": "New Lead Submission",
+        "text": "=New lead received:\n\nName: {{$json.name}}\nEmail: {{$json.email}}\nCompany: {{$json.company}}\nMessage: {{$json.message}}"
+      },
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [750, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "MongoDB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MongoDB": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+} 

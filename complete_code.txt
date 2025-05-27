@@ -1,0 +1,319 @@
+# Complete Lead Processing Application Code
+
+## 1. Package Configuration (package.json)
+```json
+{
+  "name": "lead-backend",
+  "version": "1.0.0",
+  "description": "Lead Processing API with MongoDB and n8n integration",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^7.6.3",
+    "dotenv": "^16.3.1",
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "express-validator": "^7.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
+```
+
+## 2. Main Server (src/server.js)
+```javascript
+require('dotenv').config();
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const leadRoutes = require('./routes/leadRoutes');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Connect to MongoDB
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/leadsDB', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+})
+.then(() => console.log('Connected to MongoDB'))
+.catch((err) => console.error('MongoDB connection error:', err));
+
+// Routes
+app.use('/api', leadRoutes);
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: 'Something went wrong!' });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
+```
+
+## 3. Lead Model (src/models/Lead.js)
+```javascript
+const mongoose = require('mongoose');
+
+const leadSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: [true, 'Name is required']
+  },
+  email: {
+    type: String,
+    required: [true, 'Email is required'],
+    match: [/^\\w+([\\.-]?\\w+)*@\\w+([\\.-]?\\w+)*(\\.\\w{2,3})+$/, 'Please provide a valid email']
+  },
+  company: {
+    type: String,
+    required: false
+  },
+  message: {
+    type: String,
+    required: false
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now
+  }
+});
+
+module.exports = mongoose.model('Lead', leadSchema);
+```
+
+## 4. Lead Routes (src/routes/leadRoutes.js)
+```javascript
+const express = require('express');
+const router = express.Router();
+const { createLead } = require('../controllers/leadController');
+const { validateLead } = require('../middleware/validateLead');
+
+router.post('/leads', validateLead, createLead);
+
+module.exports = router;
+```
+
+## 5. Lead Controller (src/controllers/leadController.js)
+```javascript
+const Lead = require('../models/Lead');
+const axios = require('axios');
+
+exports.createLead = async (req, res) => {
+  try {
+    // Extract lead data from request body
+    const leadData = {
+      name: req.body.name,
+      email: req.body.email,
+      company: req.body.company || '',
+      message: req.body.message || ''
+    };
+
+    // Create lead in MongoDB
+    const lead = new Lead(leadData);
+    await lead.save();
+
+    // Forward to n8n webhook
+    const webhookUrl = process.env.N8N_WEBHOOK_URL;
+    if (webhookUrl) {
+      try {
+        // Validate URL format
+        new URL(webhookUrl);
+        
+        // Forward the exact same JSON to n8n
+        const webhookResponse = await axios.post(webhookUrl, leadData, {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        console.log('Successfully forwarded lead to n8n:', webhookResponse.status);
+      } catch (webhookError) {
+        console.error('Error forwarding to n8n webhook:', {
+          error: webhookError.message,
+          leadId: lead._id,
+          webhookUrl
+        });
+        // We don't fail the request if webhook fails
+      }
+    } else {
+      console.warn('N8N webhook URL not configured - skipping webhook forward');
+    }
+
+    // Return success response
+    res.status(201).json({
+      success: true,
+      data: lead,
+      webhookForwarded: Boolean(webhookUrl)
+    });
+  } catch (error) {
+    console.error('Error processing lead:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error processing lead'
+    });
+  }
+};
+```
+
+## 6. Validation Middleware (src/middleware/validateLead.js)
+```javascript
+const { body, validationResult } = require('express-validator');
+
+exports.validateLead = [
+  body('name')
+    .trim()
+    .notEmpty()
+    .withMessage('Name is required'),
+  
+  body('email')
+    .trim()
+    .notEmpty()
+    .withMessage('Email is required')
+    .isEmail()
+    .withMessage('Please provide a valid email'),
+  
+  body('company')
+    .optional()
+    .trim(),
+  
+  body('message')
+    .optional()
+    .trim(),
+
+  (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+    next();
+  }
+];
+```
+
+## 7. Environment Variables (.env)
+```plaintext
+MONGODB_URI=mongodb://localhost:27017/leadsDB
+N8N_WEBHOOK_URL=https://yadhagiri.app.n8n.cloud/webhook/leads
+PORT=3000
+```
+
+## 8. n8n Workflow (workflows/lead-processing.json)
+```json
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leads",
+        "options": {
+          "rawBody": true,
+          "responseMode": "lastNode",
+          "responseData": "firstEntryJson"
+        }
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "leads",
+        "fields": {
+          "values": [
+            {
+              "name": "={{$json.name}}",
+              "email": "={{$json.email}}",
+              "company": "={{$json.company}}",
+              "message": "={{$json.message}}",
+              "createdAt": "={{$now}}"
+            }
+          ]
+        }
+      },
+      "name": "MongoDB",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "credentials": {
+        "mongodb": {
+          "name": "MongoDB Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "notifications@yourdomain.com",
+        "toEmail": "sales@yourdomain.com",
+        "subject": "New Lead Submission",
+        "text": "=New lead received:\\n\\nName: {{$json.name}}\\nEmail: {{$json.email}}\\nCompany: {{$json.company}}\\nMessage: {{$json.message}}"
+      },
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [750, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "MongoDB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MongoDB": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
+```
+
+## Project Structure
+```
+lead-backend/
+├── package.json
+├── .env
+├── src/
+│   ├── server.js
+│   ├── models/
+│   │   └── Lead.js
+│   ├── routes/
+│   │   └── leadRoutes.js
+│   ├── controllers/
+│   │   └── leadController.js
+│   └── middleware/
+│       └── validateLead.js
+└── workflows/
+    └── lead-processing.json
+``` 
